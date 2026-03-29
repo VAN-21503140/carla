@@ -3,7 +3,6 @@ import random
 import time
 import math
 
-
 client = carla.Client("localhost", 2000)
 client.set_timeout(5.0)
 
@@ -95,6 +94,28 @@ def compute_steer(vehicle_transform, target_waypoint, vehicle, k=1.0, soft_term=
 
     return steer
 
+
+def compute_speed_control(vehicle, target_speed=8.0, kp=0.18):
+    velocity = vehicle.get_velocity()
+    speed = math.sqrt(
+        velocity.x ** 2 +
+        velocity.y ** 2 +
+        velocity.z ** 2
+    )
+
+    speed_error = target_speed - speed
+
+    if speed_error >= 0:
+        throttle = kp * speed_error
+        throttle = max(0.0, min(0.75, throttle))
+        brake = 0.0
+    else:
+        throttle = 0.0
+        brake = min(0.5, -kp * speed_error)
+
+    return throttle, brake, speed
+
+
 def distance_to_waypoint(target_waypoint, vehicle):
     return vehicle.get_transform().location.distance(
         target_waypoint.transform.location
@@ -112,11 +133,18 @@ def update_spectator(vehicle):
 
 
 vehicle = None
+original_settings = world.get_settings()
 
 try:
+    # ===== 同步模式 =====
+    settings = world.get_settings()
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 0.05
+    world.apply_settings(settings)
+
     vehicle, spawn_point = spawn_vehicle(world, carla_map, blueprints)
 
-    time.sleep(0.2)
+    world.tick()
 
     print("spawn point:", spawn_point.location)
     print("vehicle actual:", vehicle.get_transform().location)
@@ -131,6 +159,8 @@ try:
         print("target waypoint:", target_waypoint.transform.location)
 
         for _ in range(3000):
+            world.tick()
+            time.sleep(0.02)
             distance = distance_to_waypoint(target_waypoint, vehicle)
 
             if distance < 4.0:
@@ -144,11 +174,14 @@ try:
             vehicle_transform = vehicle.get_transform()
             steer = compute_steer(vehicle_transform, target_waypoint, vehicle)
 
+            # ===== 速度控制 =====
+            throttle, brake, speed = compute_speed_control(vehicle, target_speed=8.0)
+
             vehicle.apply_control(
                 carla.VehicleControl(
-                    throttle=0.35,
+                    throttle=throttle,
                     steer=steer,
-                    brake=0.0
+                    brake=brake
                 )
             )
 
@@ -158,6 +191,8 @@ try:
             print("vehicle:", vehicle_location)
             print("waypoint:", waypoint_location)
             print("distance:", distance)
+            print("speed:", speed)
+            print("throttle:", throttle, "brake:", brake)
 
             world.debug.draw_point(
                 waypoint_location,
@@ -167,8 +202,10 @@ try:
             )
 
             update_spectator(vehicle)
-            time.sleep(0.05)
 
 finally:
+    # 恢复原来的世界设置
+    world.apply_settings(original_settings)
+
     if vehicle is not None:
         vehicle.destroy()
